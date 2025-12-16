@@ -7,9 +7,9 @@ import { connect } from 'cloudflare:sockets';
 const UUID = "06b65903-406d-4a41-8463-6fd5c0ee7798";  //可以在此修改你的自定义UUID 【优先级环境变量】
 
 // 1. 后台管理密码
-const WEB_PASSWORD = "abc123."; //修改你的管理密码 //可以在此修改你的管理员密码 【优先级环境变量】
+const WEB_PASSWORD = "2B6Hh4JDi9gSZNQ"; //修改你的管理密码 //可以在此修改你的管理员密码 【优先级环境变量】
 // 2. 快速订阅密码 (访问 https://域名/密码)
-const SUB_PASSWORD = "abc."; //修改你的订阅密码  //可以在此修改你的订阅密码 【优先级环境变量】
+const SUB_PASSWORD = "a123."; //修改你的订阅密码  //可以在此修改你的订阅密码 【优先级环境变量】
 
 // 3. 默认基础配置
 // 🔴 默认 ProxyIP (代码修改此处生效，客户端修改 path 生效)
@@ -69,34 +69,27 @@ const PT_TYPE = 'v'+'l'+'e'+'s'+'s';
 // 🗄️ 数据库与存储助手 (D1 + R2)
 // =============================================================================
 
-// 环境变量/配置获取 (优先级：1.环境变量 > 2.D1 > 3.KV > 4.默认)
+// 环境变量/配置获取 (优先级：1.环境变量(非空) > 2.D1 > 3.KV > 4.代码默认)
 async function getSafeEnv(env, key, fallback) {
-    // 1. 第一优先：直接检查 Cloudflare 环境变量
-    if (env[key]) return env[key];
-
-    // 2. 第二优先：尝试从 D1 读取 (用于后台面板保存的设置)
+    if (env[key] && env[key].trim() !== "") return env[key];
     if (env.DB) {
         try {
             const { results } = await env.DB.prepare("SELECT value FROM config WHERE key = ?").bind(key).all();
-            if (results && results.length > 0 && results[0].value) {
+            if (results && results.length > 0 && results[0].value && results[0].value.trim() !== "") {
                 return results[0].value;
             }
         } catch(e) { /* D1读取失败忽略 */ }
     }
-
-    // 3. 第三优先：尝试从 KV
     if (env.LH) {
         try {
             const kvVal = await env.LH.get(key);
-            if (kvVal) return kvVal;
+            if (kvVal && kvVal.trim() !== "") return kvVal;
         } catch(e) {}
     }
-
-    // 4. 最后兜底
     return fallback;
 }
 
-// 日志记录 (写入 D1 数据库 logs 表)
+// 日志记录
 async function logAccess(env, ip, region, action) {
     const time = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
     if (env.DB) {
@@ -108,7 +101,7 @@ async function logAccess(env, ip, region, action) {
     }
 }
 
-// 每日请求计数 (D1 stats 表)
+// 每日请求计数
 async function incrementDailyStats(env) {
     if (!env.DB) return "0";
     const dateStr = new Date().toISOString().split('T')[0];
@@ -124,21 +117,10 @@ async function checkFlood(env, ip) {
     if (!env.DB) return false;
     const now = Math.floor(Date.now() / 1000);
     try {
-        // 清理 60 秒前的记录
         await env.DB.prepare("DELETE FROM flood WHERE updated_at < ?").bind(now - 60).run();
-        
-        // 插入或更新计数
-        await env.DB.prepare(`
-            INSERT INTO flood (ip, count, updated_at) VALUES (?, 1, ?)
-            ON CONFLICT(ip) DO UPDATE SET count = count + 1, updated_at = ?
-        `).bind(ip, now, now).run();
-
-        // 获取当前计数
+        await env.DB.prepare(`INSERT INTO flood (ip, count, updated_at) VALUES (?, 1, ?) ON CONFLICT(ip) DO UPDATE SET count = count + 1, updated_at = ?`).bind(ip, now, now).run();
         const { results } = await env.DB.prepare("SELECT count FROM flood WHERE ip = ?").bind(ip).all();
-        const count = results[0]?.count || 0;
-        
-        // 阈值设定为 >= 5
-        return count >= 5;
+        return (results[0]?.count || 0) >= 5;
     } catch(e) { return false; }
 }
 
@@ -155,7 +137,7 @@ async function checkBan(env, ip) {
     return false;
 }
 
-// 🚫 执行封禁 (永久)
+// 🚫 执行封禁
 async function banIP(env, ip) {
     if (env.DB) {
         try { await env.DB.prepare("INSERT OR REPLACE INTO bans (ip, is_banned) VALUES (?, 1)").bind(ip).run(); } catch(e) {}
@@ -211,14 +193,16 @@ async function getCustomIPs(env) {
     return ips;
 }
 
-function genNodes(h, u, p, ipsText) {
+function genNodes(h, u, p, ipsText, ps = "") {
     let l = ipsText.split('\n').filter(line => line.trim() !== "");
     for (let i = l.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [l[i], l[j]] = [l[j], l[i]]; }
     const P = p ? `/proxyip=${p.trim()}` : "/";
     const E = encodeURIComponent(P);
     return l.map(L => {
         const [a, n] = L.split('#'); if (!a) return "";
-        const I = a.trim(); const N = n ? n.trim() : 'Worker-Node';
+        const I = a.trim(); 
+        let N = n ? n.trim() : 'Worker-Node';
+        if (ps) N = `${N} ${ps}`;
         let i = I, pt = "443"; if (I.includes(':') && !I.includes('[')) { const s = I.split(':'); i = s[0]; pt = s[1]; }
         return `${PT_TYPE}://${u}@${i}:${pt}?encryption=none&security=tls&sni=${h}&alpn=h3&fp=random&allowInsecure=1&type=ws&host=${h}&path=${E}#${encodeURIComponent(N)}`
     }).join('\n');
@@ -376,15 +360,21 @@ function loginPage(tgGroup, tgChannel) {
     </div>
     <script>
         function gh(){fetch("?flag=github&t="+Date.now(),{keepalive:!0});window.open("https://github.com/xtgm/stallTCP1.3V1","_blank")}
+        // 核心修改：移除 Max-Age，使其成为会话级 Cookie，关闭浏览器即失效
         function verify(){
             const p = document.getElementById("pwd").value;
             if(!p) return;
+            // 先清除旧的
             document.cookie = "auth=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT";
+            // 设置新的会话 Cookie
             document.cookie = "auth=" + p + "; path=/; SameSite=Lax";
+            // 配合前端的 sessionStorage 检测
             sessionStorage.setItem("is_active", "1");
             location.reload();
         }
+        
         window.onload = function() {
+            // 如果 sessionStorage 丢失（代表新标签页或重启浏览器），则清除残留的 auth cookie
             if(!sessionStorage.getItem("is_active")) {
                 document.cookie = "auth=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT";
             }
@@ -406,11 +396,15 @@ function dashPage(host, uuid, proxyip, subpass, subdomain, converter, env, clien
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Worker 控制台</title>
+    <!-- 关键修复：默认隐藏 Body，防止未授权时闪现内容 -->
     <style>
+        body { display: none; } 
         :root { --bg: #121418; --card: #1e222a; --text: #e0e0e0; --border: #2a2f38; --accent: #3498db; --green: #2ecc71; --red: #e74c3c; --input-bg: #15181e; --modal-bg: #1e222a; }
         body.light { --bg: #f0f2f5; --card: #ffffff; --text: #333333; --border: #e0e0e0; --accent: #3498db; --green: #27ae60; --red: #c0392b; --input-bg: #f9f9f9; --modal-bg: #ffffff; }
-        body { background-color: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, sans-serif; margin: 0; padding: 20px; display: flex; justify-content: center; transition: 0.3s; }
+        body.loaded { display: flex; } /* JS 验证通过后添加此 class 显示 */
+        body { background-color: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, sans-serif; margin: 0; padding: 20px; justify-content: center; transition: 0.3s; }
         .container { width: 100%; max-width: 900px; display: flex; flex-direction: column; gap: 20px; }
+        /* ... 其他样式保持不变 ... */
         .card { background-color: var(--card); border-radius: 8px; padding: 20px; border: 1px solid var(--border); box-shadow: 0 4px 12px rgba(0,0,0,0.05); }
         .header { display: flex; justify-content: space-between; align-items: center; padding-bottom: 15px; border-bottom: 1px solid var(--border); margin-bottom: 15px; }
         .header-title { display: flex; align-items: center; gap: 10px; font-size: 1.2rem; font-weight: 600; }
@@ -470,7 +464,7 @@ function dashPage(host, uuid, proxyip, subpass, subdomain, converter, env, clien
         @media (max-width: 600px) { .status-grid { grid-template-columns: 1fr; } .input-group-row { flex-direction:column; } }
     </style>
 </head>
-<body>
+<body id="mainBody">
     <div class="container">
         
         <div class="card" style="padding: 15px 20px;">
@@ -493,7 +487,8 @@ function dashPage(host, uuid, proxyip, subpass, subdomain, converter, env, clien
                 </div>
             </div>
         </div>
-
+        
+        <!-- ... 省略中间内容，结构与之前一致 ... -->
         <div class="card status-grid">
             <div class="circle-chart-box">
                 <div class="circle-ring"></div>
@@ -628,9 +623,17 @@ function dashPage(host, uuid, proxyip, subpass, subdomain, converter, env, clien
         const CLIENT_IP = "${clientIP}";
         const HAS_AUTH = ${hasAuth};
 
+        // 核心修复逻辑：
+        // 1. 如果后端要求鉴权 (HAS_AUTH=true)
+        // 2. 且 sessionStorage 没有 'is_active' 标记 (新标签页/浏览器重启)
+        // 3. 立即清理 Cookie 并刷新，强制返回登录页
+        // 4. 关键：因为 body 默认 display:none，所以用户在跳转前看不到任何内容
         if (HAS_AUTH && !sessionStorage.getItem("is_active")) {
             document.cookie = "auth=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/";
-            location.reload();
+            window.location.reload();
+        } else {
+            // 验证通过，显示页面内容
+            document.body.classList.add('loaded');
         }
 
         function val(id) { return document.getElementById(id).value; }
@@ -700,7 +703,6 @@ function dashPage(host, uuid, proxyip, subpass, subdomain, converter, env, clien
             try {
                 await fetch('?flag=save_config', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data) });
                 alert('保存成功'); closeModal(modalId);
-                // 刷新页面以更新状态灯
                 setTimeout(() => location.reload(), 500);
             } catch(e) { alert('保存失败: ' + e); }
         }
@@ -762,6 +764,7 @@ export default {
       const _WEB_PW = await getSafeEnv(env, 'WEB_PASSWORD', WEB_PASSWORD);
       const _SUB_PW = await getSafeEnv(env, 'SUB_PASSWORD', SUB_PASSWORD);
       const _PROXY_IP = await getSafeEnv(env, 'PROXYIP', DEFAULT_PROXY_IP);
+      const _PS = await getSafeEnv(env, 'PS', ""); // 获取 PS 变量
       
       let _SUB_DOMAIN = await getSafeEnv(env, 'SUB_DOMAIN', DEFAULT_SUB_DOMAIN);
       let _CONVERTER = await getSafeEnv(env, 'SUBAPI', DEFAULT_CONVERTER);
@@ -770,6 +773,12 @@ export default {
       if (_SUB_DOMAIN.includes("/")) _SUB_DOMAIN = _SUB_DOMAIN.split("/")[0];
       if (_CONVERTER.endsWith("/")) _CONVERTER = _CONVERTER.slice(0, -1);
       if (!_CONVERTER.includes("://")) _CONVERTER = "https://" + _CONVERTER;
+
+      // 1. UA 爬虫过滤 (静默拦截)
+      const UA_L = UA.toLowerCase();
+      if (UA_L.includes('spider') || UA_L.includes('bot') || UA_L.includes('python') || UA_L.includes('scrapy') || UA_L.includes('curl') || UA_L.includes('wget')) {
+          return new Response('Not Found', { status: 404 });
+      }
 
       // 身份识别
       const wl = await getSafeEnv(env, 'WL_IP', "");
@@ -878,9 +887,11 @@ export default {
           ctx.waitUntil(logAccess(env, clientIP, `${city},${country}`, "订阅更新"));
           const isFlagged = url.searchParams.has('flag');
           if (!isFlagged) {
-             const title = isAdmin ? "🔄 管理员订阅更新" : "⚠️ 陌生人订阅访问";
-             const p = sendTgMsg(ctx, env, title, r, "", isAdmin);
-             if(ctx && ctx.waitUntil) ctx.waitUntil(p);
+             // 仅管理员发通知，陌生人静默
+             if (isAdmin) {
+                 const p = sendTgMsg(ctx, env, "🔄 管理员订阅更新", r, "", true);
+                 if(ctx && ctx.waitUntil) ctx.waitUntil(p);
+             }
           }
 
           const requestProxyIp = url.searchParams.get('proxyip') || _PROXY_IP;
@@ -900,11 +911,35 @@ export default {
 
           try {
               const res = await fetch(subUrl, { headers: { 'User-Agent': UA } });
-              if (res.ok) return new Response(res.body, { status: 200, headers: res.headers });
+              if (res.ok) {
+                  let body = await res.text();
+                  if (_PS) {
+                      try {
+                          const decoded = atob(body); 
+                          const modified = decoded.split('\n').map(line => {
+                              line = line.trim();
+                              if (!line || !line.includes('://')) return line;
+                              if (line.includes('#')) return line + encodeURIComponent(` ${_PS}`);
+                              return line + '#' + encodeURIComponent(_PS);
+                          }).join('\n');
+                          body = btoa(modified); 
+                      } catch(e) {
+                           if(body.includes('://')) {
+                               body = body.split('\n').map(line => {
+                                   line = line.trim();
+                                   if (!line || !line.includes('://')) return line;
+                                   if (line.includes('#')) return line + encodeURIComponent(` ${_PS}`);
+                                   return line + '#' + encodeURIComponent(_PS);
+                               }).join('\n');
+                           }
+                      }
+                  }
+                  return new Response(body, { status: 200, headers: res.headers });
+              }
           } catch(e) {}
 
           const allIPs = await getCustomIPs(env);
-          const listText = genNodes(host, _UUID, requestProxyIp, allIPs);
+          const listText = genNodes(host, _UUID, requestProxyIp, allIPs, _PS);
           return new Response(btoa(unescape(encodeURIComponent(listText))), { status: 200, headers: { 'Content-Type': 'text/plain; charset=utf-8' } });
       }
 
@@ -919,26 +954,39 @@ export default {
           if (pathParam && pathParam.includes('/proxyip=')) proxyIp = pathParam.split('/proxyip=')[1];
           
           const allIPs = await getCustomIPs(env);
-          const listText = genNodes(host, _UUID, proxyIp, allIPs);
+          const listText = genNodes(host, _UUID, proxyIp, allIPs, _PS);
           return new Response(btoa(unescape(encodeURIComponent(listText))), { status: 200, headers: { 'Content-Type': 'text/plain; charset=utf-8' } });
       }
 
       // 🟢 面板逻辑 (HTTP)
       if (r.headers.get('Upgrade') !== 'websocket') {
           const noCacheHeaders = { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' };
-          if (_WEB_PW) {
+          
+          // 1. 服务端鉴权：未设置密码时，强制假装“未登录”，迫使显示登录页（且无法进入）
+          let hasPassword = !!_WEB_PW;
+          let isAuthorized = false;
+
+          if (hasPassword) {
               const cookie = r.headers.get('Cookie') || "";
               const match = cookie.match(/auth=([^;]+)/);
-              if (!match || match[1] !== _WEB_PW) {
-                  return new Response(loginPage(TG_GROUP_URL, TG_CHANNEL_URL), { status: 200, headers: noCacheHeaders });
+              if (match && match[1] === _WEB_PW) {
+                  isAuthorized = true;
               }
+          } 
+          // else: 密码未设置，isAuthorized 默认为 false，直接跳登录页
+
+          // 2. 鉴权失败/未登录：显示登录页
+          if (!isAuthorized) {
+              return new Response(loginPage(TG_GROUP_URL, TG_CHANNEL_URL), { status: 200, headers: noCacheHeaders });
           }
+
+          // 3. 鉴权成功：进入后台
           await sendTgMsg(ctx, env, "✅ 后台登录成功", r, "进入管理面板", true);
           ctx.waitUntil(logAccess(env, clientIP, `${city},${country}`, "登录后台"));
-          const hasPassword = !!_WEB_PW;
-          // 检查配置状态以控制状态灯
+          
           const tgState = !!(await getSafeEnv(env, 'TG_BOT_TOKEN', '')) && !!(await getSafeEnv(env, 'TG_CHAT_ID', ''));
           const cfState = (!!(await getSafeEnv(env, 'CF_ID', '')) && !!(await getSafeEnv(env, 'CF_TOKEN', ''))) || (!!(await getSafeEnv(env, 'CF_EMAIL', '')) && !!(await getSafeEnv(env, 'CF_KEY', '')));
+          
           return new Response(dashPage(url.hostname, _UUID, _PROXY_IP, _SUB_PW, _SUB_DOMAIN, _CONVERTER, env, clientIP, hasPassword, tgState, cfState), { status: 200, headers: noCacheHeaders });
       }
       
